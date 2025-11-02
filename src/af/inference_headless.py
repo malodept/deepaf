@@ -15,6 +15,43 @@ def predict_infocus(net, img, thr=0.5):
     p = net(x).sigmoid().item()
     return p >= thr, p
 
+# new: disk PSF generator
+def _disk_kernel(R: int):
+    if R <= 0:
+        k = np.zeros((1,1), np.float32); k[0,0] = 1.0
+        return k
+    d = 2*R + 1
+    y, x = np.ogrid[-R:R+1, -R:R+1]
+    m = (x*x + y*y) <= R*R
+    k = np.zeros((d,d), np.float32); k[m] = 1.0
+    k /= k.sum()
+    return k
+
+# new: simple defocus + optional breathing (scale) + gamma handling
+def _apply_defocus(frame, Z, psf_per_step=0.9, breathing=0.0, gamma=2.2):
+    # défocus + breathing simples pour simuler la lentille pendant la démo
+    img = frame.astype(np.float32) / 255.0
+    img_lin = np.power(img, gamma)
+    R = int(max(0, round(abs(Z) * psf_per_step)))
+    psf = _disk_kernel(R)
+    bl = cv.filter2D(img_lin, -1, psf, borderType=cv.BORDER_REFLECT)
+    if abs(breathing) > 1e-6:
+        scale = 1.0 + breathing * (1 if Z >= 0 else -1)
+        h, w = bl.shape[:2]
+        bh, bw = int(round(h*scale)), int(round(w*scale))
+        tmp = cv.resize(bl, (bw, bh), interpolation=cv.INTER_LINEAR)
+        if scale >= 1.0:
+            y0 = (bh - h)//2; x0 = (bw - w)//2
+            bl = tmp[y0:y0+h, x0:x0+w]
+        else:
+            canvas = np.zeros_like(bl)
+            y0 = (h - bh)//2; x0 = (w - bw)//2
+            canvas[y0:y0+bh, x0:x0+bw] = tmp
+            bl = canvas
+    out = np.power(bl, 1.0/gamma)
+    out = (out * 255.0).clip(0,255).astype(np.uint8)
+    return out
+
 def crop(frame, box, size=256):
     x,y,w,h,_,_ = box
     x0,y0,x1,y1 = max(0,x), max(0,y), min(frame.shape[1], x+w), min(frame.shape[0], y+h)
@@ -63,7 +100,9 @@ def main(args):
         cv.rectangle(frame, (x,y), (x+w2,y+h2), (0,255,255), 2)
         cv.putText(frame, status, (10,30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
         cv.putText(frame, f"TEN={g1:.2f} LAPV={g2:.2f}", (10,60), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 2)
-        out.write(frame)
+        # si simulate_lens=1, on applique le défocus dépendant de Z avant écriture
+        fvis = _apply_defocus(frame, Z, args.psf_per_step, args.breathing) if args.simulate_lens else frame
+        out.write(fvis)
         frame_id += 1
 
     cap.release(); out.release()
@@ -81,5 +120,9 @@ if __name__ == "__main__":
     ap.add_argument("--size", type=int, default=256)
     ap.add_argument("--inf_thr", type=float, default=0.5)
     ap.add_argument("--init_Z", type=float, default=3.0)
+    # nouveaux paramètres de simulation de lentille
+    ap.add_argument("--simulate_lens", type=int, default=0)
+    ap.add_argument("--psf_per_step", type=float, default=0.9)
+    ap.add_argument("--breathing", type=float, default=0.0)
     args = ap.parse_args()
     main(args)
