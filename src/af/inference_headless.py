@@ -100,8 +100,20 @@ def main(args):
         cv.rectangle(frame, (x,y), (x+w2,y+h2), (0,255,255), 2)
         cv.putText(frame, status, (10,30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
         cv.putText(frame, f"TEN={g1:.2f} LAPV={g2:.2f}", (10,60), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 2)
-        # si simulate_lens=1, on applique le défocus dépendant de Z avant écriture
-        fvis = _apply_defocus(frame, Z, args.psf_per_step, args.breathing) if args.simulate_lens else frame
+        fvis = frame
+        if args.simulate_lens:
+            fvis = _apply_defocus(frame, Z, args.psf_per_step, args.breathing)
+        if args.subject_bokeh:
+            # masque doux centré sur la ROI: garde sujet net (Z≈0), floute le fond (Z=bg_Z)
+            mask = np.zeros((frame.shape[0], frame.shape[1]), np.uint8)
+            x,y,w2,h2,_,_ = box
+            cv.rectangle(mask, (x,y), (x+w2,y+h2), 255, -1)
+            if args.feather_px>0:
+                k = max(3, 2*args.feather_px+1)
+                mask = cv.GaussianBlur(mask, (k,k), args.feather_px)
+            mask3 = cv.merge([mask,mask,mask]).astype(np.float32)/255.0
+            bg_blur = _apply_defocus(frame, args.bg_Z, args.psf_per_step, 0.0)
+            fvis = (mask3*fvis + (1-mask3)*bg_blur).astype(np.uint8)
         out.write(fvis)
         frame_id += 1
 
@@ -120,9 +132,13 @@ if __name__ == "__main__":
     ap.add_argument("--size", type=int, default=256)
     ap.add_argument("--inf_thr", type=float, default=0.5)
     ap.add_argument("--init_Z", type=float, default=3.0)
-    # nouveaux paramètres de simulation de lentille
+    # simulateur global
     ap.add_argument("--simulate_lens", type=int, default=0)
     ap.add_argument("--psf_per_step", type=float, default=0.9)
     ap.add_argument("--breathing", type=float, default=0.0)
+    # nouveau: bokeh sujet (fond flou, sujet net)
+    ap.add_argument("--subject_bokeh", type=int, default=0)
+    ap.add_argument("--feather_px", type=int, default=28)
+    ap.add_argument("--bg_Z", type=float, default=3.5)
     args = ap.parse_args()
     main(args)
